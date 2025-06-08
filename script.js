@@ -31,6 +31,23 @@ function setupScene() {
     camera.position.z = 5;
 }
 
+// --- Helper to convert image URL to data URL ---
+async function imageUrlToDataUrl(url) {
+    const image = new Image();
+    image.crossOrigin = 'Anonymous';
+    await new Promise((resolve, reject) => {
+        image.onload = resolve;
+        image.onerror = reject;
+        image.src = url;
+    });
+    const canvas = document.createElement('canvas');
+    canvas.width = image.width;
+    canvas.height = image.height;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(image, 0, 0);
+    return canvas.toDataURL('image/png');
+}
+
 // --- Sword Generation Pipeline ---
 
 const swordGenerationPrompt = `Solid White Background. Create a high-contrast fantasy sword image with these EXACT specifications:
@@ -61,13 +78,16 @@ async function generateNewSword() {
         const originalUrl = imageResult.url;
         setLoading(true, "Enchanting the sword...");
 
+        // Convert image to data URL for vision model to prevent access issues.
+        const imageDataUrl = await imageUrlToDataUrl(originalUrl);
+
         // 2. Generate Name
         const nameResult = await websim.chat.completions.create({
             messages: [{
                 role: "user",
                 content: [
                     { type: "text", text: `Give this sword an epic fantasy name. Respond with JSON: {"name": "..."}` },
-                    { type: "image_url", image_url: { url: originalUrl } }
+                    { type: "image_url", image_url: { url: imageDataUrl } }
                 ]
             }],
             json: true,
