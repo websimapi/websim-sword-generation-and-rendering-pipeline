@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { WebsimSocket } from '@websim/websim-socket';
 
 // --- DOM Elements ---
 const canvas = document.getElementById('scene-canvas');
@@ -7,10 +8,22 @@ const loadingOverlay = document.getElementById('loading-overlay');
 const loadingText = document.getElementById('loading-text');
 const inventoryGrid = document.getElementById('inventory-grid');
 
+// --- Database ---
+const room = new WebsimSocket({
+  schema: {
+    swords: {
+      id: "uuid",
+      name: "text",
+      originalUrl: "text",
+      processedUrl: "text",
+    },
+  },
+});
+
 // --- State ---
-let swordInventory = [];
 let currentSwordObject = null;
 let isGenerating = false;
+let currentUser = null;
 
 // --- Three.js Setup ---
 const scene = new THREE.Scene();
@@ -101,15 +114,13 @@ async function generateNewSword() {
 
         // 4. Upload Processed Image
         const blob = await new Promise(resolve => processedCanvas.toBlob(resolve, 'image/png'));
-        const uploadResult = await websim.uploadFile({ file: blob });
-        const processedUrl = uploadResult.url;
+        const processedUrl = await websim.upload(blob);
 
-        // 5. Store in Inventory
+        // 5. Store in Database and display
         const newSword = { name: swordName, originalUrl, processedUrl };
-        swordInventory.push(newSword);
+        const createdSword = await room.collection('swords').create(newSword);
         
-        updateInventoryUI();
-        displaySword(newSword);
+        displaySword(createdSword);
 
     } catch (error) {
         console.error("Sword generation failed:", error);
@@ -168,6 +179,9 @@ function displaySword(swordData) {
     if (currentSwordObject) {
         camera.remove(currentSwordObject);
         currentSwordObject.geometry.dispose();
+        if (currentSwordObject.material.map) {
+            currentSwordObject.material.map.dispose();
+        }
         currentSwordObject.material.dispose();
     }
     
@@ -186,6 +200,7 @@ function displaySword(swordData) {
         });
 
         const swordMesh = new THREE.Mesh(geometry, material);
+        swordMesh.userData.processedUrl = swordData.processedUrl;
         swordMesh.position.set(0.7, -0.6, -2.5);
         swordMesh.rotation.z = -Math.PI / 16;
         swordMesh.rotation.y = Math.PI / 16;
@@ -207,9 +222,9 @@ function setLoading(isLoading, text = "Loading...") {
     }
 }
 
-function updateInventoryUI() {
+function updateInventoryUI(swords) {
     inventoryGrid.innerHTML = '';
-    swordInventory.forEach(sword => {
+    swords.forEach(sword => {
         const item = document.createElement('div');
         item.className = 'inventory-item';
         item.style.backgroundImage = `url(${sword.processedUrl})`;
@@ -223,6 +238,9 @@ function updateInventoryUI() {
         item.addEventListener('click', () => displaySword(sword));
         inventoryGrid.appendChild(item);
     });
+    if (currentSwordObject && currentSwordObject.userData.processedUrl) {
+      updateSelectedInventoryItem(currentSwordObject.userData.processedUrl);
+    }
 }
 
 function updateSelectedInventoryItem(processedUrl) {
@@ -256,14 +274,39 @@ function onWindowResize() {
     renderer.setSize(window.innerWidth, window.innerHeight);
 }
 
+// --- Subscription ---
+function subscribeToInventory() {
+    if (!currentUser) return;
+    room.collection('swords').filter({ user_id: currentUser.id }).subscribe(swords => {
+        swords.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+        updateInventoryUI(swords);
+    });
+}
+
 // --- Initialization ---
 
-function init() {
+async function init() {
     setupScene();
     generateBtn.addEventListener('click', generateNewSword);
     window.addEventListener('resize', onWindowResize);
     animate();
-    generateNewSword(); // Generate the first sword on load
+    
+    currentUser = await websim.getCurrentUser();
+
+    setLoading(true, 'Loading your armory...');
+    const initialSwords = await room.collection('swords').filter({ user_id: currentUser.id }).getList();
+    setLoading(false);
+
+    initialSwords.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+    updateInventoryUI(initialSwords);
+    
+    if (initialSwords.length > 0) {
+        displaySword(initialSwords[initialSwords.length - 1]);
+    } else {
+        generateNewSword();
+    }
+    
+    subscribeToInventory();
 }
 
 init();
